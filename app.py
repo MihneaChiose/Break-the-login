@@ -1,23 +1,27 @@
 import sqlite3
 import uuid
+import secrets
+import time
 from flask import Flask, request, jsonify, make_response, render_template_string, redirect, url_for
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 
 sessions = {}
 reset_tokens = {}
 
+login_attempts = {}
+
 def get_db_connection():
     conn = sqlite3.connect('authx.db')
     conn.row_factory = sqlite3.Row
     return conn
 
-
 BASE_LAYOUT = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>AuthX - System v1 (Vulnerable)</title>
+    <title>AuthX - System v2 (Secured)</title>
     <style>
         body { font-family: sans-serif; margin: 40px; line-height: 1.6; }
         nav { margin-bottom: 20px; background: #eee; padding: 10px; }
@@ -38,7 +42,7 @@ BASE_LAYOUT = """
 
 @app.route('/')
 def index():
-    return render_template_string(BASE_LAYOUT + "<p>Acces restrictionat angajatilor.</p>")
+    return render_template_string(BASE_LAYOUT + "<p>Acces restrictionat angajatilor (Sistem Securizat).</p>")
 
 @app.route('/register', methods=['GET'])
 def register_page():
@@ -47,7 +51,7 @@ def register_page():
     <form method="POST" action="/api/register">
         Email: <input type="email" name="email" required><br><br>
         Parola: <input type="password" name="password" required><br><br>
-        <button type="submit">inregistrare</button>
+        <button type="submit">Inregistrare</button>
     </form>
     """)
 
@@ -70,7 +74,7 @@ def dashboard():
         return render_template_string(BASE_LAYOUT + f"""
             <h1>Dashboard Utilizator</h1>
             <p>Sunteti autentificat cu succes! ID Utilizator: {user_id}</p>
-            <p>Acesta este un sistem vulnerabil</p>
+            <p>Acesta este un sistem securizat (v2).</p>
             <a href='/logout'>Deconectare</a>
         """)
     return redirect(url_for('login_page'))
@@ -97,24 +101,37 @@ def reset_password_page():
     </form>
     """)
 
-
 @app.route('/api/register', methods=['POST'])
 def register():
     email = request.form.get('email') or request.json.get('email')
     password = request.form.get('password') or request.json.get('password')
 
+    hashed_password = generate_password_hash(password)
+
     conn = get_db_connection()
     try:
-        conn.execute('INSERT INTO users (email, password_hash) VALUES (?, ?)', (email, password))
+        conn.execute('INSERT INTO users (email, password_hash) VALUES (?, ?)', (email, hashed_password))
         conn.commit()
-        return "Cont creat! <a href='/login'>Login aici</a>"
+        return "Cont creat cu succes! <a href='/login'>Login aici</a>"
     except sqlite3.IntegrityError:
-        return "Eroare: Email deja existent.", 400
+        return "Eroare: Adresa de email este deja utilizata.", 400
     finally:
         conn.close()
 
 @app.route('/api/login', methods=['POST'])
 def login():
+    ip = request.remote_addr
+    
+    current_time = time.time()
+    if ip in login_attempts:
+        if login_attempts[ip]['count'] >= 5:
+            if current_time - login_attempts[ip]['last_attempt'] < 60:
+                return "Prea multe incercari esuate. Te rugam sa astepti 60 de secunde.", 429
+            else:
+                login_attempts[ip]['count'] = 0
+    else:
+        login_attempts[ip] = {'count': 0, 'last_attempt': current_time}
+
     email = request.form.get('email') or request.json.get('email')
     password = request.form.get('password') or request.json.get('password')
 
@@ -122,18 +139,28 @@ def login():
     user = conn.execute('SELECT * FROM users WHERE email = ?', (email,)).fetchone()
     conn.close()
 
-    if not user:
-        return "EROARE: Utilizatorul nu a fost gasit in baza de date", 404
-    
-    if user['password_hash'] == password:
-        session_id = str(uuid.uuid4())
+    if user and check_password_hash(user['password_hash'], password):
+        if ip in login_attempts:
+            del login_attempts[ip]
+
+        session_id = secrets.token_hex(32)
         sessions[session_id] = user['id']
         
         resp = make_response(redirect(url_for('dashboard')))
-        resp.set_cookie('session_id', session_id)
+        
+        resp.set_cookie(
+            'session_id', 
+            session_id, 
+            httponly=True,
+            secure=True,
+            samesite='Lax'
+        )
         return resp
     else:
-        return "EROARE: Parola introdusa este incorecta", 401
+        login_attempts[ip]['count'] += 1
+        login_attempts[ip]['last_attempt'] = current_time
+        
+        return "EROARE: Email sau parola incorecta.", 401
 
 @app.route('/logout')
 def logout():
@@ -141,15 +168,17 @@ def logout():
     if session_id in sessions:
         del sessions[session_id]
     resp = make_response(redirect(url_for('login_page')))
-    resp.set_cookie('session_id', '', expires=0)
+    resp.set_cookie('session_id', '', expires=0, httponly=True, secure=True, samesite='Lax')
     return resp
 
 @app.route('/api/forgot-password', methods=['POST'])
 def forgot_password():
     email = request.form.get('email') or request.json.get('email')
-    token = f"reset-token-{email}"
+    
+    token = secrets.token_urlsafe(32)
     reset_tokens[token] = email
-    return f"Token generat: <strong>{token}</strong> (in mod normal trimis pe mail)<br>Accesati <a href='/reset-password'>pagina de resetare</a> pentru a finaliza."
+    
+    return f"Daca adresa exista, un token a fost generat: <strong>{token}</strong><br>Accesati <a href='/reset-password'>pagina de resetare</a>."
 
 @app.route('/api/reset-password', methods=['POST'])
 def reset_password():
@@ -158,13 +187,19 @@ def reset_password():
     
     if token in reset_tokens:
         email = reset_tokens[token]
+        
+        hashed_password = generate_password_hash(new_password)
+        
         conn = get_db_connection()
-        conn.execute('UPDATE users SET password_hash = ? WHERE email = ?', (new_password, email))
+        conn.execute('UPDATE users SET password_hash = ? WHERE email = ?', (hashed_password, email))
         conn.commit()
         conn.close()
-        return "Parola a fost schimbata (Token-ul a ramas valid pentru reutilizare"
+        
+        del reset_tokens[token]
+        
+        return "Parola a fost schimbata cu succes!"
     
-    return "Token invalid!", 400
+    return "Token invalid sau expirat!", 400
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
