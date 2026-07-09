@@ -2,8 +2,6 @@
 
 ## Overview
 
-**Break-the-login** is an academic project developed for the _Secure Software Application Development_ course at the Faculty of Mathematics and Computer Science, University of Bucharest.
-
 The goal of the project is to demonstrate how authentication systems are attacked in practice and how they can be secured against real-world threats.
 
 The project contains two versions of the same application:
@@ -50,7 +48,7 @@ The secured version addresses these issues using:
 Clone the repository:
 
 ```bash
-git clone https://github.com/<username>/Break-the-login.git
+git clone https://github.com/MihneaChiose/Break-the-login.git
 cd Break-the-login
 ```
 
@@ -77,7 +75,3 @@ The application will be available at:
 ```text
 http://localhost:5000
 ```
-
-## Educational Purpose
-
-This project was developed strictly for educational purposes in a controlled laboratory environment to study authentication vulnerabilities and secure software development practices.
